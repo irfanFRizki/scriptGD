@@ -28,6 +28,17 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Install Android command-line tools
+        run: |
+          set -euo pipefail
+          TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+          TOOLS_DIR="$RUNNER_TEMP/android-tools"
+          mkdir -p "$TOOLS_DIR"
+          curl -fsSL "$TOOLS_URL" -o "$RUNNER_TEMP/android-tools.zip"
+          unzip -q "$RUNNER_TEMP/android-tools.zip" -d "$TOOLS_DIR"
+          SDKMANAGER="$TOOLS_DIR/cmdline-tools/bin/sdkmanager"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "build-tools;35.0.0"
+
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
