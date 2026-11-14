@@ -2,6 +2,9 @@ name: Android APK
 
 on:
   push:
+    branches:
+      - '**'
+      - '!main'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -15,25 +18,120 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
       - name: Build debug APK
-        run: gradle --no-daemon assembleDebug
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Build signed release APK
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && vars.KEYSTORE_CONFIGURED == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "::error::KEYSTORE_CONFIGURED=true but one or more keystore secrets are empty."
+            exit 1
+          fi
+          KEYSTORE_FILE="$RUNNER_TEMP/release.keystore"
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_FILE"
+          ./gradlew --no-daemon assembleRelease \
+            -Pandroid.injected.signing.store.file="$KEYSTORE_FILE" \
+            -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
+          rm -f "$KEYSTORE_FILE"
+
+      - name: Verify APK with aapt2
+        id: verify
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          AAPT2=""
+          if [ -n "$SDK_ROOT" ] && [ -d "$SDK_ROOT/build-tools" ]; then
+            AAPT2="$(find "$SDK_ROOT/build-tools" -maxdepth 2 -type f -name aapt2 2>/dev/null | sort -V | tail -n 1)"
+          fi
+          if [ -z "$AAPT2" ] && command -v aapt2 >/dev/null 2>&1; then
+            AAPT2="$(command -v aapt2)"
+          fi
+          if [ -z "$AAPT2" ]; then
+            echo "::error::aapt2 tidak ditemukan di Android SDK build-tools"
+            exit 1
+          fi
+          echo "Using: $AAPT2"
+
+          APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+          APK_VARIANT="debug"
+          if [ -f "app/build/outputs/apk/release/app-release.apk" ]; then
+            APK_PATH="app/build/outputs/apk/release/app-release.apk"
+            APK_VARIANT="release (signed)"
+          fi
+          if [ ! -s "$APK_PATH" ]; then
+            echo "::error::APK tidak ada atau berukuran 0: $APK_PATH"
+            exit 1
+          fi
+
+          "$AAPT2" dump badging "$APK_PATH" > badging.txt
+          PACKAGE="$(grep -oP "package: name='\K[^']+" badging.txt)"
+          VERSION_NAME="$(grep -oP "versionName='\K[^']+" badging.txt)"
+          VERSION_CODE="$(grep -oP "versionCode='\K[^']+" badging.txt)"
+          MIN_SDK="$(grep -oP "sdkVersion:'\K[^']+" badging.txt)"
+          TARGET_SDK="$(grep -oP "targetSdkVersion:'\K[^']+" badging.txt)"
+          SHA256="$(sha256sum "$APK_PATH" | cut -d' ' -f1)"
+          SIZE="$(stat -c%s "$APK_PATH")"
+
+          echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
+          echo "apk_variant=$APK_VARIANT" >> "$GITHUB_OUTPUT"
+          echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Verifikasi APK"
+            echo ""
+            echo "| Item | Nilai |"
+            echo "| --- | --- |"
+            echo "| Varian | $APK_VARIANT |"
+            echo "| Package | \`$PACKAGE\` |"
+            echo "| versionName | \`$VERSION_NAME\` |"
+            echo "| versionCode | \`$VERSION_CODE\` |"
+            echo "| minSdk | \`$MIN_SDK\` |"
+            echo "| targetSdk | \`$TARGET_SDK\` |"
+            echo "| Ukuran | $SIZE bytes |"
+            echo "| SHA-256 | \`$SHA256\` |"
+            echo ""
+            if [ -z "${KEYSTORE_BASE64:-}" ] || [ -z "${KEYSTORE_PASSWORD:-}" ] || [ -z "${KEY_ALIAS:-}" ] || [ -z "${KEY_PASSWORD:-}" ]; then
+              echo "> PERINGATAN: signing keystore belum dikonfigurasi sepenuhnya. Isi semua secrets: \`KEYSTORE_BASE64\`, \`KEYSTORE_PASSWORD\`, \`KEY_ALIAS\`, \`KEY_PASSWORD\`. Release APK tidak dibangun; artefak yang tersedia adalah debug APK (debug signing)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: scriptGD-${{ github.ref_name }}
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: scriptGD-${{ github.ref_name }}-${{ github.sha }}
+          path: ${{ steps.verify.outputs.apk_path }}
           if-no-files-found: error
+
       - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" app/build/outputs/apk/debug/app-debug.apk --title "scriptGD $GITHUB_REF_NAME" --generate-notes
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" "${{ steps.verify.outputs.apk_path }}" \
+            --title "scriptGD $GITHUB_REF_NAME" \
+            --generate-notes
