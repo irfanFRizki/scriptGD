@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">scriptGD</string>
+    <string name="dashboard_title">Dashboard</string>
+    <string name="dashboard_lukisanku">Lukisanku</string>
+    <string name="dashboard_lukisanku_description">Kelola foto dan gambar di Google Drive</string>
+    <string name="login_title">Selamat datang</string>
+    <string name="login_subtitle">Masuk untuk menghubungkan dashboard Google Drive Anda</string>
+    <string name="login_google">Lanjutkan dengan Google</string>
+    <string name="gallery_empty">Belum ada gambar untuk ditampilkan</string>
+    <string name="upload_image">Upload gambar</string>
+</resources>
