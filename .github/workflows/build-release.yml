@@ -34,8 +34,8 @@ jobs:
       - name: Build debug APK
         run: ./gradlew --no-daemon assembleDebug
 
-      - name: Build signed release APK
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && vars.KEYSTORE_CONFIGURED == 'true'
+      - name: Check signing secrets
+        id: signing
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -43,21 +43,39 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
-            echo "::error::KEYSTORE_CONFIGURED=true but one or more keystore secrets are empty."
-            exit 1
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
+              echo "configured=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "configured=false" >> "$GITHUB_OUTPUT"
+              echo "Keystore signing secrets incomplete; using debug signing for this tag build."
+            fi
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Build signed release APK
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && steps.signing.outputs.configured == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
           KEYSTORE_FILE="$RUNNER_TEMP/release.keystore"
+          trap 'rm -f "$KEYSTORE_FILE"' EXIT
           printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_FILE"
           ./gradlew --no-daemon assembleRelease \
             -Pandroid.injected.signing.store.file="$KEYSTORE_FILE" \
             -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
             -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
             -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
-          rm -f "$KEYSTORE_FILE"
 
       - name: Verify APK with aapt2
         id: verify
+        env:
+          KEYSTORE_CONFIGURED: ${{ steps.signing.outputs.configured }}
         run: |
           set -euo pipefail
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
@@ -114,8 +132,8 @@ jobs:
             echo "| Ukuran | $SIZE bytes |"
             echo "| SHA-256 | \`$SHA256\` |"
             echo ""
-            if [ -z "${KEYSTORE_BASE64:-}" ] || [ -z "${KEYSTORE_PASSWORD:-}" ] || [ -z "${KEY_ALIAS:-}" ] || [ -z "${KEY_PASSWORD:-}" ]; then
-              echo "> PERINGATAN: signing keystore belum dikonfigurasi sepenuhnya. Isi semua secrets: \`KEYSTORE_BASE64\`, \`KEYSTORE_PASSWORD\`, \`KEY_ALIAS\`, \`KEY_PASSWORD\`. Release APK tidak dibangun; artefak yang tersedia adalah debug APK (debug signing)."
+            if [ "$GITHUB_EVENT_NAME" = "push" ] && [[ "$GITHUB_REF" == refs/tags/v* ]] && [ "$KEYSTORE_CONFIGURED" != "true" ]; then
+              echo "> PERINGATAN: satu atau lebih keystore secrets belum diisi. Isi \`KEYSTORE_BASE64\`, \`KEYSTORE_PASSWORD\`, \`KEY_ALIAS\`, \`KEY_PASSWORD\` untuk signing release; run ini menggunakan debug signing."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
