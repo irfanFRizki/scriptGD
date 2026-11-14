@@ -154,10 +154,14 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Sanitize artifact name
+        id: artname
+        run: echo "name=scriptGD-$(echo "${GITHUB_REF_NAME}" | tr '/:\\ ' '---')-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: scriptGD-${{ github.ref_name }}-${{ github.sha }}
+          name: ${{ steps.artname.outputs.name }}
           path: ${{ steps.verify.outputs.apk_path }}
           if-no-files-found: error
 
