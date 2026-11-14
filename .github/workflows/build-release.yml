@@ -114,12 +114,18 @@ jobs:
             exit 1
           fi
 
-          "$AAPT2" dump badging "$APK_PATH" > badging.txt
-          PACKAGE="$(grep -oP "package: name='\K[^']+" badging.txt)"
-          VERSION_NAME="$(grep -oP "versionName='\K[^']+" badging.txt)"
-          VERSION_CODE="$(grep -oP "versionCode='\K[^']+" badging.txt)"
-          MIN_SDK="$(grep -oP "sdkVersion:'\K[^']+" badging.txt)"
-          TARGET_SDK="$(grep -oP "targetSdkVersion:'\K[^']+" badging.txt)"
+          "$AAPT2" dump badging "$APK_PATH" > badging.txt || { echo "::error::aapt2 dump badging gagal"; exit 1; }
+          echo "--- badging (awal) ---"
+          head -n 15 badging.txt
+          PACKAGE="$(grep -oP "package: name='\K[^']+" badging.txt || true)"
+          VERSION_NAME="$(grep -oP "versionName='\K[^']*" badging.txt | head -n1 || true)"
+          VERSION_CODE="$(grep -oP "versionCode='\K[^']+" badging.txt | head -n1 || true)"
+          MIN_SDK="$(grep -oP "(?<![A-Za-z])(minSdkVersion|sdkVersion):'?\K[0-9]+" badging.txt | head -n1 || true)"
+          TARGET_SDK="$(grep -oP "targetSdkVersion:'?\K[0-9]+" badging.txt | head -n1 || true)"
+          if [ -z "$PACKAGE" ]; then
+            echo "::error::package tidak terbaca dari badging.txt"
+            exit 1
+          fi
           SHA256="$(sha256sum "$APK_PATH" | cut -d' ' -f1)"
           SIZE="$(stat -c%s "$APK_PATH")"
 
@@ -148,10 +154,14 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Sanitize artifact name
+        id: artname
+        run: echo "name=scriptGD-$(echo "${GITHUB_REF_NAME}" | tr '/:\\ ' '---')-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: scriptGD-${{ github.ref_name }}-${{ github.sha }}
+          name: ${{ steps.artname.outputs.name }}
           path: ${{ steps.verify.outputs.apk_path }}
           if-no-files-found: error
 
